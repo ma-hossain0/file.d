@@ -307,7 +307,7 @@ const (
 
 const (
 	tsCmpModeNowTag      = "now"
-	tsCmpModeExplicitTag = "explicit"
+	tsCmpModeExplicitTag = "const"
 
 	tsCmpValueNowTag   = "now"
 	tsCmpValueStartTag = "file_d_start"
@@ -367,7 +367,7 @@ func extractTsCmpOpNode(_ string, jsonNode *simplejson.Json) (doif.Node, error) 
 		}
 	}
 
-	return doif.NewTsCmpOpNode(fieldPath, format, cmpOp, cmpMode, cmpValue)
+	return doif.NewTsCmpOpNode(fieldPath, format, cmpOp, cmpMode, cmpValue, 5*time.Minute)
 }
 
 func extractLogicalOpNode(opName string, jsonNode *simplejson.Json) (doif.Node, error) {
