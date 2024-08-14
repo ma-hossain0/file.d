@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ozontech/file.d/cfg"
@@ -22,6 +23,50 @@ import (
 
 /*{ introduction
 It sends events to splunk.
+
+By default it only stores original event under the "event" key according to the Splunk output format.
+
+If other fields are required it is possible to copy fields values from the original event to the other
+fields relative to the output json. Copies are not allowed directly to the root of output event or
+"event" field and any of its subfields.
+
+For example, timestamps and service name can be copied to provide additional meta data to the Splunk:
+
+```yaml
+copy_fields:
+  ts: time
+  service: fields.service_name
+```
+
+Here the plugin will lookup for "ts" and "service" fields in the original event and if they are present
+they will be copied to the output json starting on the same level as the "event" key. If the field is not
+found in the original event plugin will not populate new field in output json.
+
+In:
+
+```json
+{
+  "ts":"1723651045",
+  "service":"some-service",
+  "message":"something happened"
+}
+```
+
+Out:
+
+```json
+{
+  "event": {
+    "ts":"1723651045",
+    "service":"some-service",
+    "message":"something happened"
+  },
+  "time": "1723651045",
+  "fields": {
+    "service_name": "some-service"
+  }
+}
+```
 }*/
 
 const (
@@ -55,12 +100,19 @@ func (l gzipCompressionLevel) toFastHTTP() int {
 	}
 }
 
+type copyField struct {
+	fromPath []string
+	toPath   []string
+}
+
 type Plugin struct {
 	config *Config
 
 	client     *fasthttp.Client
 	endpoint   *fasthttp.URI
 	authHeader string
+
+	copyFieldsPaths []copyField
 
 	logger     *zap.SugaredLogger
 	controller pipeline.OutputPluginController
@@ -151,6 +203,15 @@ type Config struct {
 	// >
 	// > Multiplier for exponential increase of retention between retries
 	RetentionExponentMultiplier int `json:"retention_exponentially_multiplier" default:"2"` // *
+
+	// > @3@4@5@6
+	// >
+	// > Map of field paths copy from field in original event to field in output json.
+	// > To fields paths are relative to output json - one level higher since original
+	// > event is stored under the "event" key. Supports nested fields in both from and to.
+	// > Supports copying whole original event, but does not allow to copy directly to the output root
+	// > or the "event" key with any of its subkeys.
+	CopyFields map[string]string `json:"copy_fields"` // *
 }
 
 type data struct {
@@ -175,6 +236,22 @@ func (p *Plugin) Start(config pipeline.AnyConfig, params *pipeline.OutputPluginP
 	p.config = config.(*Config)
 	p.registerMetrics(params.MetricCtl)
 	p.prepareClient()
+
+	for k, v := range p.config.CopyFields {
+		if v == "" {
+			p.logger.Error("copies to the root are not allowed")
+			continue
+		}
+		if v == "event" || strings.HasPrefix(v, "event.") {
+			p.logger.Error("copies to the `event` field or any of its subfields are not allowed")
+			continue
+		}
+		cf := copyField{
+			fromPath: cfg.ParseFieldSelector(k),
+			toPath:   cfg.ParseFieldSelector(v),
+		}
+		p.copyFieldsPaths = append(p.copyFieldsPaths, cf)
+	}
 
 	batcherOpts := pipeline.BatcherOptions{
 		PipelineName:   params.PipelineName,
@@ -272,7 +349,16 @@ func (p *Plugin) out(workerData *pipeline.WorkerData, batch *pipeline.Batch) err
 	outBuf := data.outBuf[:0]
 
 	batch.ForEach(func(event *pipeline.Event) {
+		// "event" field is necessary, it always contains full event data
 		root.AddField("event").MutateToNode(event.Root.Node)
+		// copy data from original event to other fields, like event's "ts" to outbuf's "time"
+		for _, cf := range p.copyFieldsPaths {
+			fieldVal := event.Root.Dig(cf.fromPath...)
+			if fieldVal == nil {
+				continue
+			}
+			pipeline.CreateNestedField(root, cf.toPath).MutateToNode(fieldVal)
+		}
 		outBuf = root.Encode(outBuf)
 		_ = root.DecodeString("{}")
 	})
