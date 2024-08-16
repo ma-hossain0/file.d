@@ -302,7 +302,8 @@ func extractLengthCmpOpNode(opName string, jsonNode *simplejson.Json) (doif.Node
 }
 
 const (
-	fieldNameFormat = "format"
+	fieldNameFormat         = "format"
+	fieldNameUpdateInterval = "update_interval"
 )
 
 const (
@@ -313,7 +314,7 @@ const (
 	tsCmpValueStartTag = "file_d_start"
 )
 
-const defaultTSCmpValUpdateInterval = 5 * time.Minute
+const defaultTSCmpValUpdateInterval = 10 * time.Second
 
 func extractTsCmpOpNode(_ string, jsonNode *simplejson.Json) (doif.Node, error) {
 	fieldPathNode, has := jsonNode.CheckGet(fieldNameField)
@@ -369,7 +370,16 @@ func extractTsCmpOpNode(_ string, jsonNode *simplejson.Json) (doif.Node, error) 
 		}
 	}
 
-	return doif.NewTsCmpOpNode(fieldPath, format, cmpOp, cmpMode, cmpValue, defaultTSCmpValUpdateInterval)
+	updateInterval := defaultTSCmpValUpdateInterval
+	str := jsonNode.Get(fieldNameUpdateInterval).MustString()
+	if str != "" {
+		updateInterval, err = time.ParseDuration(str)
+		if err != nil {
+			return nil, fmt.Errorf("parse update interval: %w", err)
+		}
+	}
+
+	return doif.NewTsCmpOpNode(fieldPath, format, cmpOp, cmpMode, cmpValue, updateInterval)
 }
 
 func extractLogicalOpNode(opName string, jsonNode *simplejson.Json) (doif.Node, error) {
